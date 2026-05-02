@@ -9,9 +9,7 @@
 
 ## 🖼️ Preview
 
-> _La habitación "respira": las paredes se deforman y las venas laten bajo el linóleo sucio._
-> ![Preview del proyecto](./src/assets/hero.png)
-
+> ![Preview del proyecto](./src/assets/image.png)
 ---
 
 ## ✨ Características (Zero-Asset Policy)

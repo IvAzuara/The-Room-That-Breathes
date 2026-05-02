@@ -15,6 +15,7 @@ precision highp float;
 uniform vec2 u_resolution;
 uniform float u_time;
 uniform vec3 u_cameraPos;
+uniform float u_divisor;
 
 #define MAX_STEPS 80
 #define MAX_DIST 40.0
@@ -200,57 +201,49 @@ void main() {
     crtUV += crtUV * dot(crtUV, crtUV) * 0.07;
     vec2 screenUV = (crtUV + 1.0) * 0.5;
 
-    vec2 lowRes = vec2(320.0, 240.0);
-    vec2 pixelPos = floor(screenUV * lowRes);
-    vec2 uv = (pixelPos / lowRes) * 2.0 - 1.0;
+    // Dynamic resolution based on breathing
+    vec2 renderRes = u_resolution / u_divisor;
+    vec2 pixelPos = floor(screenUV * renderRes);
+    vec2 uv = (pixelPos / renderRes) * 2.0 - 1.0;
     uv.x *= u_resolution.x / u_resolution.y;
 
-    vec2 jitter = (vec2(hash(pixelPos + u_time), hash(pixelPos + u_time + 1.234)) - 0.5) * 0.5 / lowRes;
-    
-    float bleed = 0.0015;
-    vec3 col;
-    col.r = renderScene(uv + jitter + vec2(bleed, 0.0)).r;
-    col.g = renderScene(uv + jitter).g;
-    col.b = renderScene(uv + jitter - vec2(bleed, 0.0)).b;
+    // SINGLE renderScene call
+    vec3 col = renderScene(uv);
 
-    // ── NUEVO: Phosphor Blur (simula que cada píxel CRT sangra) ──
-    // Tomamos muestras de píxeles vecinos en espacio de pantalla real
-    vec2 pixelSize = 1.0 / u_resolution.xy;
-    vec3 colN  = renderScene(uv + vec2(0.0,  pixelSize.y * 2.0));
-    vec3 colS  = renderScene(uv + vec2(0.0, -pixelSize.y * 2.0));
-    vec3 colE  = renderScene(uv + vec2( pixelSize.x * 2.0, 0.0));
-    vec3 colW  = renderScene(uv + vec2(-pixelSize.x * 2.0, 0.0));
-    
-    // Blur horizontal más fuerte que vertical (así funciona un CRT real)
-    col = col * 0.5 + (colE + colW) * 0.18 + (colN + colS) * 0.07;
+    // FAKE CRT color bleed - shifting channels mathematically
+    float bleed = 0.003;
+    col.r *= 1.0 + bleed * sin(uv.x * 30.0 + u_time);
+    col.b *= 1.0 - bleed * sin(uv.x * 30.0 + u_time);
 
-    // Bayer dithering DESPUÉS del blur (así no se ve la cuadrícula)
+    // FAKE Phosphor blur - soften with math instead of neighbor sampling
+    float softness = 0.015;
+    col *= 1.0 - softness * sin(gl_FragCoord.x * 3.14159 * 2.0);
+
+    // Bayer dithering
     float threshold = bayer4x4(pixelPos);
     vec3 ditheredCol = floor(col * 15.0 + threshold) / 15.0;
-    col = mix(col, ditheredCol, 0.6); // 0.6 en lugar de 1.0 = más suave
+    col = mix(col, ditheredCol, 0.6);
 
-    // Color depth — sube a 31 para menos posterización visible
+    // Color depth
     col = floor(col * 31.0) / 31.0;
 
-    // ── NUEVO: Phosphor Mask (la triada RGB de un CRT) ──
-    // Cada columna de píxeles reales es R, G, o B
-    float maskX = mod(gl_FragCoord.x, 3.0);
+    // Phosphor Mask RGB - Anchored to internal resolution
+    float maskX = mod(pixelPos.x, 3.0);
     vec3 mask = vec3(
-        smoothstep(0.0, 0.5, 1.0 - abs(maskX - 0.0)),
-        smoothstep(0.0, 0.5, 1.0 - abs(maskX - 1.0)),
-        smoothstep(0.0, 0.5, 1.0 - abs(maskX - 2.0))
+        step(maskX, 0.5),
+        step(abs(maskX - 1.0), 0.5),
+        step(abs(maskX - 2.0), 0.5)
     );
-    // Mezcla suave — si pones 0.3 se nota pero no destruye la imagen
-    col *= mix(vec3(1.0), mask * 1.5, 0.25);
+    col *= mix(vec3(1.0), mask * 1.4, 0.2);
 
-    // Phosphor tint verde
+    // Phosphor tint
     col = mix(col, col * vec3(0.9, 1.0, 0.85), 0.3);
 
-    // ── NUEVO: Scanlines suavizadas con seno en lugar de step ──
-    float scan = 1.0 - sin(gl_FragCoord.y * 3.14159) * 0.15;
+    // Scanlines - Anchored to internal resolution
+    float scan = mod(pixelPos.y, 2.0) < 1.0 ? 0.88 : 1.0;
     col *= scan;
 
-    // Grain mínimo
+    // Grain
     float grain = (hash(uv + u_time) - 0.5) * 0.025;
     col += grain;
 
@@ -267,12 +260,12 @@ void main() {
 class AudioEngine {
     private ctx: AudioContext | null = null;
     private drone1: OscillatorNode | null = null;
+    private drone2: OscillatorNode | null = null;
     private noiseBuffer: AudioBuffer | null = null;
 
     async init() {
         this.ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
         
-        // Frecuencia de respiración: 0.25hz = 4 segundos por ciclo
         const breathRate = 0.25;
 
         // Create Noise Buffer
@@ -283,73 +276,122 @@ class AudioEngine {
             output[i] = Math.random() * 2 - 1;
         }
 
-        // --- INHALACIÓN: ruido filtrado que sube ---
+        // --- SILENT HILL LAYER 1: The Dissonant Drone ---
+        // Two low oscillators slightly detuned to create "beating" frequencies
+        this.drone1 = this.ctx.createOscillator();
+        this.drone2 = this.ctx.createOscillator();
+        const droneGain = this.ctx.createGain();
+        
+        this.drone1.type = 'sawtooth';
+        this.drone1.frequency.value = 55; // A1
+        this.drone2.type = 'sawtooth';
+        this.drone2.frequency.value = 55.5; // Slight detune for that industrial dread
+        
+        const lowpass = this.ctx.createBiquadFilter();
+        lowpass.type = 'lowpass';
+        lowpass.frequency.value = 200;
+
+        droneGain.gain.value = 0.05;
+        
+        this.drone1.connect(lowpass);
+        this.drone2.connect(lowpass);
+        lowpass.connect(droneGain);
+        droneGain.connect(this.ctx.destination);
+        this.drone1.start();
+        this.drone2.start();
+
+        // --- SILENT HILL LAYER 2: Industrial Resonance ---
+        // Filtered noise that sounds like a distant factory or metal dragging
+        const metallicFilter = this.ctx.createBiquadFilter();
+        metallicFilter.type = 'bandpass';
+        metallicFilter.frequency.value = 400;
+        metallicFilter.Q.value = 10; // High Q for metallic ringing
+
+        const metallicGain = this.ctx.createGain();
+        metallicGain.gain.value = 0.02;
+
+        const metallicNoise = this.ctx.createBufferSource();
+        metallicNoise.buffer = this.noiseBuffer;
+        metallicNoise.loop = true;
+        
+        metallicNoise.connect(metallicFilter);
+        metallicFilter.connect(metallicGain);
+        metallicGain.connect(this.ctx.destination);
+        metallicNoise.start();
+
+        // Randomly modulate the metallic ring frequency
+        const modulateResonance = () => {
+            if (!this.ctx) return;
+            const nextTime = 2000 + Math.random() * 5000;
+            metallicFilter.frequency.setTargetAtTime(200 + Math.random() * 800, this.ctx.currentTime, 1.5);
+            setTimeout(modulateResonance, nextTime);
+        };
+        modulateResonance();
+
+        // --- INHALACIÓN / EXHALACIÓN (Existing Logic) ---
         const inhaleNode = this.ctx.createBufferSource();
         inhaleNode.buffer = this.noiseBuffer;
         inhaleNode.loop = true;
-
         const inhaleFilter = this.ctx.createBiquadFilter();
         inhaleFilter.type = 'bandpass';
         inhaleFilter.frequency.value = 800;
-        inhaleFilter.Q.value = 0.8;
-
         const inhaleGain = this.ctx.createGain();
         inhaleGain.gain.value = 0.0;
-
         inhaleNode.connect(inhaleFilter);
         inhaleFilter.connect(inhaleGain);
         inhaleGain.connect(this.ctx.destination);
         inhaleNode.start();
 
-        // --- EXHALACIÓN: más grave, más larga ---
-        const exhaleFilter = this.ctx.createBiquadFilter();
-        exhaleFilter.type = 'bandpass';
-        exhaleFilter.frequency.value = 300;
-        exhaleFilter.Q.value = 1.2;
-
-        const exhaleGain = this.ctx.createGain();
-        exhaleGain.gain.value = 0.0;
-
         const exhaleSource = this.ctx.createBufferSource();
         exhaleSource.buffer = this.noiseBuffer;
         exhaleSource.loop = true;
+        const exhaleFilter = this.ctx.createBiquadFilter();
+        exhaleFilter.type = 'bandpass';
+        exhaleFilter.frequency.value = 300;
+        const exhaleGain = this.ctx.createGain();
+        exhaleGain.gain.value = 0.0;
         exhaleSource.connect(exhaleFilter);
         exhaleFilter.connect(exhaleGain);
         exhaleGain.connect(this.ctx.destination);
         exhaleSource.start();
 
-        // --- Drone grave que pulsa ---
-        this.drone1 = this.ctx.createOscillator();
-        this.drone1.frequency.value = 55;
-        this.drone1.type = 'sawtooth';
-        const droneGain = this.ctx.createGain();
-        droneGain.gain.value = 0.04;
-        this.drone1.connect(droneGain);
-        droneGain.connect(this.ctx.destination);
-        this.drone1.start();
-
-        // --- Ciclo de respiración manual con setTargetAtTime ---
         const breathCycle = () => {
             if (!this.ctx) return;
             const now = this.ctx.currentTime;
-            const cycleLen = 1.0 / breathRate; // 4 segundos
-            const inDur  = cycleLen * 0.4;     // 1.6s inhala
-            const outDur = cycleLen * 0.6;     // 2.4s exhala
+            const cycleLen = 1.0 / breathRate; 
+            const inDur  = cycleLen * 0.4;     
+            const outDur = cycleLen * 0.6;     
 
-            // Inhala
-            inhaleGain.gain.setTargetAtTime(0.06, now, inDur * 0.3);
+            inhaleGain.gain.setTargetAtTime(0.04, now, inDur * 0.3);
             exhaleGain.gain.setTargetAtTime(0.0,  now, inDur * 0.2);
-            droneGain.gain.setTargetAtTime(0.02, now, inDur * 0.3);
+            droneGain.gain.setTargetAtTime(0.03, now, inDur * 0.3);
 
-            // Exhala
             inhaleGain.gain.setTargetAtTime(0.0,  now + inDur, outDur * 0.2);
-            exhaleGain.gain.setTargetAtTime(0.07, now + inDur, outDur * 0.3);
-            droneGain.gain.setTargetAtTime(0.06, now + inDur, outDur * 0.4);
+            exhaleGain.gain.setTargetAtTime(0.06, now + inDur, outDur * 0.3);
+            droneGain.gain.setTargetAtTime(0.05, now + inDur, outDur * 0.4);
 
             setTimeout(breathCycle, cycleLen * 1000);
         };
-
         breathCycle();
+
+        // --- SILENT HILL LAYER 3: Random Industrial Clinks ---
+        const playClink = () => {
+            if (!this.ctx) return;
+            const t = this.ctx.currentTime;
+            const osc = this.ctx.createOscillator();
+            const g = this.ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(100 + Math.random() * 50, t);
+            osc.frequency.exponentialRampToValueAtTime(10, t + 2);
+            g.gain.setValueAtTime(0.02, t);
+            g.gain.exponentialRampToValueAtTime(0.001, t + 2);
+            osc.connect(g);
+            g.connect(this.ctx.destination);
+            osc.start();
+            osc.stop(t + 2);
+            setTimeout(playClink, 5000 + Math.random() * 10000);
+        };
+        playClink();
     }
 
     playFootstep() {
@@ -498,10 +540,24 @@ async function main() {
     const resolutionLoc = gl.getUniformLocation(program, "u_resolution");
     const timeLoc = gl.getUniformLocation(program, "u_time");
     const cameraPosLoc = gl.getUniformLocation(program, "u_cameraPos");
+    const divisorLoc = gl.getUniformLocation(program, "u_divisor");
+
+    function smoothstep(edge0: number, edge1: number, x: number): number {
+        const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+        return t * t * (3 - 2 * t);
+    }
+
+    function fract(x: number): number {
+        return x - Math.floor(x);
+    }
 
     function resize() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+        // Fix the internal resolution to decouple performance from browser zoom.
+        // 800px width provides a consistent "200% zoom" retro feel.
+        const targetWidth = 800;
+        const aspect = window.innerHeight / window.innerWidth;
+        canvas.width = targetWidth;
+        canvas.height = targetWidth * aspect;
         gl!.viewport(0, 0, canvas.width, canvas.height);
     }
     window.addEventListener('resize', resize);
@@ -509,6 +565,9 @@ async function main() {
 
     let startTime = 0;
     let lastBob = 0;
+    let currentDivisor = 5.0;
+    let nextDivisorChange = 0;
+
     function render(time: number) {
         if (startTime === 0) startTime = time;
         const elapsed = (time - startTime) * 0.001;
@@ -516,6 +575,19 @@ async function main() {
         gl!.uniform2f(resolutionLoc, canvas.width, canvas.height);
         gl!.uniform1f(timeLoc, elapsed);
         
+        // Spontaneous random pixelation changes - SUBTLER sizes
+        if (elapsed > nextDivisorChange) {
+            // Random divisor between 1.2 and 4.0 (smaller pixels)
+            currentDivisor = 1.2 + Math.random() * 2.8;
+            
+            // STAY with this resolution for a random duration (0.8s to 4.5s)
+            nextDivisorChange = elapsed + 0.8 + Math.random() * 3.7;
+            
+            // 15% chance of a slightly higher distortion peak (still limited)
+            if (Math.random() < 0.15) currentDivisor = 5.5;
+        }
+        gl!.uniform1f(divisorLoc, currentDivisor);
+
         const speed = 1.2;
         const currentBob = Math.cos(elapsed * 4.0);
         
