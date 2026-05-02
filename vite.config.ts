@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  base: './', // Ensures relative paths for GitHub Pages
+  base: '/The-Room-That-Breathes/',
   build: {
     outDir: 'dist',
   }
