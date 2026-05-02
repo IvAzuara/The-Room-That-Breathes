@@ -542,15 +542,6 @@ async function main() {
     const cameraPosLoc = gl.getUniformLocation(program, "u_cameraPos");
     const divisorLoc = gl.getUniformLocation(program, "u_divisor");
 
-    function smoothstep(edge0: number, edge1: number, x: number): number {
-        const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-        return t * t * (3 - 2 * t);
-    }
-
-    function fract(x: number): number {
-        return x - Math.floor(x);
-    }
-
     function resize() {
         // Fix the internal resolution to decouple performance from browser zoom.
         // 800px width provides a consistent "200% zoom" retro feel.
