@@ -1,0 +1,199 @@
+precision highp float;
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec3 u_cameraPos;
+
+#define MAX_STEPS 80
+#define MAX_DIST 40.0
+#define SURF_DIST 0.005
+
+// --- UTILS ---
+
+float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    float a = hash(i);
+    float b = hash(i + vec2(1.0, 0.0));
+    float c = hash(i + vec2(0.0, 1.0));
+    float d = hash(i + vec2(1.0, 1.0));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+        v += a * noise(p);
+        p *= 2.0;
+        a *= 0.5;
+    }
+    return v;
+}
+
+float sdBox(vec3 p, vec3 b) {
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+// PS1 Bayer 4x4 Dithering Matrix
+float bayer4x4(vec2 pos) {
+    int x = int(mod(pos.x, 4.0));
+    int y = int(mod(pos.y, 4.0));
+    int index = x + y * 4;
+    
+    if (index == 0) return 0.0;
+    if (index == 1) return 8.0/16.0;
+    if (index == 2) return 2.0/16.0;
+    if (index == 3) return 10.0/16.0;
+    if (index == 4) return 12.0/16.0;
+    if (index == 5) return 4.0/16.0;
+    if (index == 6) return 14.0/16.0;
+    if (index == 7) return 6.0/16.0;
+    if (index == 8) return 3.0/16.0;
+    if (index == 9) return 11.0/16.0;
+    if (index == 10) return 1.0/16.0;
+    if (index == 11) return 9.0/16.0;
+    if (index == 12) return 15.0/16.0;
+    if (index == 13) return 7.0/16.0;
+    if (index == 14) return 13.0/16.0;
+    if (index == 15) return 5.0/16.0;
+    return 0.0;
+}
+
+// --- SCENE ---
+
+float getDist(vec3 p) {
+    // Breathing Walls - Organic deformation
+    float breathe = sin(p.z * 0.8 + u_time * 1.2) * 0.04
+                  + sin(p.x * 1.5 + u_time * 0.7) * 0.025;
+
+    float leftWall = p.x + 2.0 + breathe;
+    float rightWall = 2.0 - p.x + breathe;
+    float floorPlane = p.y + 1.5 + breathe * 0.5;
+    float ceilPlane = 1.8 - p.y + breathe * 0.5;
+    
+    float d = min(min(leftWall, rightWall), min(floorPlane, ceilPlane));
+
+    float zRepeat = 6.0;
+    float qz = mod(p.z, zRepeat) - 0.5 * zRepeat;
+    float doors = sdBox(vec3(abs(p.x) - 2.0, p.y + 0.2, qz), vec3(0.4, 1.3, 1.0));
+    float lights = sdBox(vec3(p.x, p.y - 1.7, qz), vec3(0.6, 0.05, 1.2));
+
+    return min(d, lights) - smoothstep(0.0, 0.1, -doors) * 0.15;
+}
+
+vec3 getNormal(vec3 p) {
+    float d = getDist(p);
+    vec2 e = vec2(0.015, 0);
+    vec3 n = d - vec3(getDist(p-e.xyy), getDist(p-e.yxy), getDist(p-e.yyx));
+    return normalize(n);
+}
+
+vec3 renderScene(vec2 uv) {
+    vec3 ro = u_cameraPos;
+    vec3 rd = normalize(vec3(uv, 1.2));
+
+    // Vertex Wobble (PS1 jitter) - Snap ray origin and direction
+    float snapRes = 80.0;
+    ro = floor(ro * snapRes) / snapRes;
+    rd = normalize(floor(rd * snapRes) / snapRes);
+
+    float roll = sin(u_time * 1.5) * 0.025;
+    float pitch = cos(u_time * 3.0) * 0.015;
+    mat3 rotX = mat3(1, 0, 0, 0, cos(pitch), -sin(pitch), 0, sin(pitch), cos(pitch));
+    mat3 rotZ = mat3(cos(roll), -sin(roll), 0, sin(roll), cos(roll), 0, 0, 0, 1);
+    rd = rotX * rotZ * rd;
+
+    float dO = 0.0;
+    for(int i=0; i<80; i++) {
+        vec3 p = ro + rd * dO;
+        float dS = getDist(p);
+        dO += dS;
+        if(dO > MAX_DIST || abs(dS) < SURF_DIST) break;
+    }
+
+    vec3 col = vec3(0.005, 0.005, 0.01); 
+
+    if(dO < MAX_DIST) {
+        vec3 p = ro + rd * dO;
+        vec3 n = getNormal(p);
+        
+        // Affine Texture Warping - distort with depth
+        vec2 texUV = (abs(n.x) > 0.5) ? p.zy : p.xy;
+        if(abs(n.y) > 0.5) texUV = p.xz;
+        texUV = floor(texUV * 8.0 + dO * 0.5) / 8.0; 
+        
+        float t = fbm(texUV * 1.2);
+        float dirt = fbm(texUV * 6.0 + 5.0);
+        float rust = smoothstep(0.4, 0.9, fbm(texUV * 4.0 + u_time * 0.01));
+        
+        vec3 baseCol = vec3(0.38, 0.4, 0.35); 
+        if(p.y < -1.45) baseCol = mix(vec3(0.12, 0.12, 0.15), vec3(0.25, 0.25, 0.28), step(0.05, fract(p.x * 2.0)) * step(0.05, fract(p.z * 1.0)));
+        else if (p.y > 1.7) baseCol = vec3(0.15, 0.15, 0.12);
+        
+        baseCol = mix(baseCol, vec3(0.1, 0.08, 0.05), dirt * 0.6); 
+        baseCol = mix(baseCol, vec3(0.25, 0.1, 0.05), rust * 0.5); 
+        
+        float lightZ = mod(p.z, 6.0);
+        float lightDist = length(vec3(p.x, p.y - 1.7, lightZ - 3.0));
+        float flicker = mix(0.5, 1.0, step(0.3, sin(u_time * 4.0) * 0.5 + 0.5 + noise(vec2(u_time * 0.5)) * 0.5));
+        float overhead = (2.0 / (1.0 + lightDist * 2.5)) * flicker;
+        float flashlight = max(dot(n, normalize(ro - p)), 0.0) / (1.0 + dO * 0.1 + dO * dO * 0.04);
+        
+        col = baseCol * (flashlight * 1.5 + overhead * 2.5 + 0.02);
+        col = mix(col, vec3(0.0, 0.0, 0.01), 1.0 - exp(-dO * 0.08));
+    }
+    return col;
+}
+
+void main() {
+    // Curved CRT Screen - barrel distortion
+    vec2 crtUV = (gl_FragCoord.xy / u_resolution.xy) * 2.0 - 1.0;
+    crtUV += crtUV * dot(crtUV, crtUV) * 0.07;
+    vec2 screenUV = (crtUV + 1.0) * 0.5;
+
+    vec2 lowRes = vec2(320.0, 240.0);
+    vec2 pixelPos = floor(screenUV * lowRes);
+    vec2 uv = (pixelPos / lowRes) * 2.0 - 1.0;
+    uv.x *= u_resolution.x / u_resolution.y;
+
+    // Sub-pixel Jitter (Temporal AA)
+    vec2 jitter = (vec2(hash(pixelPos + u_time), hash(pixelPos + u_time + 1.234)) - 0.5) * 0.5 / lowRes;
+    
+    // RGB Color Bleed
+    float bleed = 0.0015;
+    vec3 col;
+    col.r = renderScene(uv + jitter + vec2(bleed, 0.0)).r;
+    col.g = renderScene(uv + jitter).g;
+    col.b = renderScene(uv + jitter - vec2(bleed, 0.0)).b;
+
+    // PS1 Bayer Dithering
+    float threshold = bayer4x4(gl_FragCoord.xy);
+    vec3 ditheredCol = floor(col * 15.0 + threshold) / 15.0; 
+    col = mix(col, ditheredCol, 1.0);
+
+    // Color Depth Reduction (15-bit color like PS1)
+    col = floor(col * 31.0) / 31.0;
+
+    // Phosphor glow CRT - adds soft bloom/tint
+    vec3 phosphor = col * vec3(0.9, 1.0, 0.85);
+    col = mix(col, phosphor, 0.3);
+
+    // Scanlines (pronounced every 2 pixels)
+    float scan = mod(gl_FragCoord.y, 2.0) < 1.0 ? 0.85 : 1.0;
+    col *= scan;
+
+    // CRT Vignette
+    float vignette = smoothstep(1.8, 0.6, length(crtUV));
+    col *= vignette;
+
+    gl_FragColor = vec4(col, 1.0);
+}
