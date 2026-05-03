@@ -5,19 +5,18 @@ on:
     branches: [ "master" ]
   workflow_dispatch:
 
-# Permisos necesarios para despliegue directo a Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Evita que múltiples despliegues choquen entre sí
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  build-and-deploy:
+  # Primer Job: Compilación
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,14 +27,19 @@ jobs:
           npm install
           npm run build
 
-      # Paso 1: Subir los archivos compilados como un artefacto
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Asegúrate de que 'dist' sea la carpeta donde se genera tu build
-          path: dist
+          path: dist # Asegúrate de que esta carpeta sea la correcta
 
-      # Paso 2: Desplegar el artefacto directamente a GitHub Pages
+  # Segundo Job: Despliegue
+  deploy:
+    needs: build # Esto obliga a que termine el build antes de empezar
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
