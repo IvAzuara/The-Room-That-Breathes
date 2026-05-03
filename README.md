@@ -3,7 +3,6 @@
 > A generative and procedural audiovisual experience designed to evoke the nostalgia of retro horror and "liminal spaces." A lucid dream simulator where everything —sound, texture, and geometry— is born entirely from code.
 
 [![Live Demo](https://img.shields.io/badge/Live-Demo-8822dd?style=for-the-badge&logo=github)](https://ivazuara.github.io/The-Room-That-Breathes)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 ---
 
