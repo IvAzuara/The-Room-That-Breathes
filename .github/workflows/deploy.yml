@@ -5,8 +5,16 @@ on:
     branches: [ "master" ]
   workflow_dispatch:
 
+# Permisos necesarios para despliegue directo a Pages
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+# Evita que múltiples despliegues choquen entre sí
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
   build-and-deploy:
@@ -20,8 +28,14 @@ jobs:
           npm install
           npm run build
 
-      - name: Deploy
-        uses: JamesIves/github-pages-deploy-action@v4
+      # Paso 1: Subir los archivos compilados como un artefacto
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          folder: dist
-          branch: gh-pages
+          # Asegúrate de que 'dist' sea la carpeta donde se genera tu build
+          path: dist
+
+      # Paso 2: Desplegar el artefacto directamente a GitHub Pages
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
